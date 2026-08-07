@@ -6,5 +6,6 @@
   "REQUEST_TIMEOUT": "15m",
   "API_KEYS": [],
   "HTTP_PROXY": "",
-  "MAX_REQUESTS_PER_MIN": 0
+  "MAX_REQUESTS_PER_MIN": 0,
+  "CORS_ORIGIN": "*"
 }

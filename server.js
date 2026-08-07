@@ -110,6 +110,17 @@ async function main() {
 // ── HTTP routing ─────────────────────────────────────────────────────────────
 
 function handleRequest(req, res) {
+  // CORS: allow browser-based clients (dashboards, web UIs, extensions).
+  res.setHeader('Access-Control-Allow-Origin', config.CORS_ORIGIN || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, x-freebuff-model, x-freebuff-instance-id');
+  res.setHeader('Access-Control-Max-Age', '86400');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    return res.end();
+  }
+
   handleAsync(req, res).catch((err) => {
     log(`UNHANDLED ${req.method} ${req.url}: ${err.message}`);
     sendJSON(res, 500, { error: { message: err.message, type: 'server_error' } });
@@ -175,6 +186,10 @@ async function handleAsync(req, res) {
 
   if (url.pathname === '/v1/chat/completions' && req.method === 'POST') {
     return await handleChatCompletions(req, res);
+  }
+
+  if (url.pathname === '/v1/messages' && req.method === 'POST') {
+    return await handleAnthropicMessages(req, res);
   }
 
   sendJSON(res, 404, {
@@ -278,6 +293,227 @@ async function handleChatCompletions(req, res) {
   sendJSON(res, 502, {
     error: { message: 'upstream failed after retries', type: 'server_error' },
   });
+}
+
+// ── Anthropic /v1/messages ───────────────────────────────────────────────────
+
+/**
+ * Anthropic Messages API → OpenAI chat.completions, then back to Anthropic.
+ * Enables Claude Code / Claude-compatible clients to use the proxy.
+ * Supports both stream:false and stream:true (SSE).
+ */
+async function handleAnthropicMessages(req, res) {
+  const body = await readBody(req);
+  let payload;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    return sendJSON(res, 400, {
+      error: { message: 'invalid JSON', type: 'invalid_request_error' },
+    });
+  }
+
+  const requestedModel = (payload.model || '').trim();
+  if (!requestedModel) {
+    return sendJSON(res, 400, {
+      error: { message: 'model is required', type: 'invalid_request_error' },
+    });
+  }
+
+  const agentID = modelToAgent[requestedModel];
+  if (!agentID) {
+    return sendJSON(res, 400, {
+      error: {
+        message: `unsupported model "${requestedModel}". Available: ${allModels.join(', ')}`,
+        type: 'invalid_request_error',
+      },
+    });
+  }
+
+  const stream = !!payload.stream;
+  // Convert Anthropic messages to OpenAI format, then inject Buffy marker.
+  const openaiPayload = anthropicToOpenAI(payload);
+  const marked = injectFreebuffMarker(openaiPayload);
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const pool = selectPool();
+    if (!pool) {
+      return sendJSON(res, 502, {
+        error: { message: 'no healthy token pool', type: 'server_error' },
+      });
+    }
+
+    let instanceId, runId;
+    try {
+      instanceId = await ensureSession(pool);
+      if (!instanceId) {
+        return sendJSON(res, 503, {
+          error: { message: 'freebuff waiting room queued', type: 'server_error' },
+        });
+      }
+      runId = await startRun(pool, agentID);
+    } catch (err) {
+      log(`[${pool.name}] setup error: ${err.message}`);
+      if (attempt === MAX_RETRIES - 1) {
+        return sendJSON(res, 502, {
+          error: { message: err.message, type: 'server_error' },
+        });
+      }
+      continue;
+    }
+
+    const upstreamBody = injectUpstreamMetadata(marked, requestedModel, runId, instanceId);
+    const result = await sendUpstream(pool, '/api/v1/chat/completions', upstreamBody, stream, requestedModel, runId);
+
+    if (result.shouldRetry) {
+      log(`[${pool.name}] retrying (attempt ${attempt + 1}): ${result.reason}`);
+      continue;
+    }
+
+    if (result.statusCode >= 200 && result.statusCode < 300) {
+      log(`[${pool.name}] OK anthropic model=${requestedModel} run=${runId}`);
+    }
+    finishRun(pool, runId).catch(() => {});
+
+    if (result.stream) {
+      // Upstream SSE (OpenAI-format) → transform each chunk to Anthropic SSE.
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+      let buffer = '';
+      result.body.on('data', (chunk) => {
+        buffer += chunk.toString();
+        const parts = buffer.split('\n');
+        buffer = parts.pop();
+        for (const line of parts) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (data === '[DONE]' || !data) continue;
+          try {
+            const openaiChunk = JSON.parse(data);
+            res.write(openAIChunkToAnthropicSSE(openaiChunk));
+          } catch {}
+        }
+      });
+      result.body.on('end', () => {
+        res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+        res.end();
+      });
+      result.body.on('error', () => {
+        res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+        res.end();
+      });
+      return;
+    }
+
+    // Non-stream: convert OpenAI JSON back to Anthropic format.
+    let anthropicResp;
+    try {
+      const openaiResp = JSON.parse(result.body);
+      anthropicResp = openAIToAnthropic(openaiResp);
+    } catch {
+      anthropicResp = result.body; // pass through as-is on parse failure
+    }
+    res.writeHead(result.statusCode, { 'Content-Type': 'application/json' });
+    res.end(typeof anthropicResp === 'string' ? anthropicResp : JSON.stringify(anthropicResp));
+    return;
+  }
+
+  sendJSON(res, 502, {
+    error: { message: 'upstream failed after retries', type: 'server_error' },
+  });
+}
+
+/**
+ * Convert Anthropic Messages request → OpenAI chat.completions request.
+ * Maps: system → system message, user/assistant content blocks → text,
+ * max_tokens → max_tokens, temperature → temperature.
+ */
+function anthropicToOpenAI(payload) {
+  const messages = [];
+  if (payload.system) {
+    const sysText =
+      typeof payload.system === 'string'
+        ? payload.system
+        : (Array.isArray(payload.system) ? payload.system.map((b) => b.text || '').join('\n') : '');
+    if (sysText) messages.push({ role: 'system', content: sysText });
+  }
+  for (const msg of payload.messages || []) {
+    let content = '';
+    if (typeof msg.content === 'string') {
+      content = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      content = msg.content
+        .map((b) => {
+          if (b.type === 'text') return b.text || '';
+          if (b.type === 'image') return '[image]';
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n');
+    }
+    messages.push({ role: msg.role === 'assistant' ? 'assistant' : 'user', content });
+  }
+  const openai = {
+    model: payload.model,
+    messages,
+    stream: !!payload.stream,
+  };
+  if (payload.max_tokens) openai.max_tokens = payload.max_tokens;
+  if (payload.temperature !== undefined) openai.temperature = payload.temperature;
+  if (payload.top_p !== undefined) openai.top_p = payload.top_p;
+  return openai;
+}
+
+/**
+ * Convert OpenAI chat.completions response → Anthropic Messages response.
+ */
+function openAIToAnthropic(openai) {
+  const choice = openai.choices?.[0] || {};
+  const msg = choice.message || {};
+  const content = [];
+  if (msg.content) content.push({ type: 'text', text: msg.content });
+  if (msg.reasoning_content) content.push({ type: 'text', text: `[reasoning] ${msg.reasoning_content}` });
+  if (content.length === 0) content.push({ type: 'text', text: '' });
+  const anthropic = {
+    id: openai.id || `msg_${Date.now()}`,
+    type: 'message',
+    role: 'assistant',
+    model: openai.model || '',
+    content,
+    stop_reason: (choice.finish_reason || 'stop') === 'stop' ? 'end_turn' : choice.finish_reason || 'end_turn',
+    stop_sequence: null,
+    usage: {
+      input_tokens: openai.usage?.prompt_tokens || 0,
+      output_tokens: openai.usage?.completion_tokens || 0,
+    },
+  };
+  return anthropic;
+}
+
+/**
+ * Convert one OpenAI streaming chunk → Anthropic SSE event(s).
+ */
+function openAIChunkToAnthropicSSE(chunk) {
+  let out = '';
+  const delta = chunk.choices?.[0]?.delta || {};
+  if (delta.content) {
+    out += `event: content_block_delta\ndata: ${JSON.stringify({
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'text_delta', text: delta.content },
+    })}\n\n`;
+  }
+  if (delta.reasoning_content) {
+    out += `event: content_block_delta\ndata: ${JSON.stringify({
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'text_delta', text: `[reasoning] ${delta.reasoning_content}` },
+    })}\n\n`;
+  }
+  return out;
 }
 
 function sendUpstream(pool, apiPath, body, stream, requestedModel, runId) {
@@ -822,6 +1058,7 @@ function loadConfig(configPath) {
     API_KEYS: [],
     HTTP_PROXY: '',
     MAX_REQUESTS_PER_MIN: 0, // 0 = unlimited (disabled)
+    CORS_ORIGIN: '*', // '*' = allow all origins; set e.g. "https://app.example.com"
   };
   let fileConfig = {};
   const fullPath = path.resolve(configPath);
@@ -842,6 +1079,7 @@ function loadConfig(configPath) {
     API_KEYS: 'API_KEYS',
     HTTP_PROXY: 'HTTP_PROXY',
     MAX_REQUESTS_PER_MIN: 'MAX_REQUESTS_PER_MIN',
+    CORS_ORIGIN: 'CORS_ORIGIN',
   };
   const cfg = { ...defaults, ...fileConfig };
   for (const [key, envKey] of Object.entries(envMap)) {

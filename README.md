@@ -28,6 +28,8 @@ Zero dependencies · Pure Node.js stdlib · Streaming & non-streaming
 | 🔄 **Token rotation** | Scheduled pool reset (`ROTATION_INTERVAL`) keeps throttled tokens fresh |
 | 🚦 **Rate limiting** | Optional per-IP cap (`MAX_REQUESTS_PER_MIN`) with `429` responses |
 | 🔒 **API key auth** | Optional `x-api-key` / `Bearer` gate in front of the proxy |
+| 🌐 **CORS** | `Access-Control-Allow-Origin` headers — usable from browser apps |
+| 🤖 **Anthropic API** | `/v1/messages` endpoint — works with Claude Code & Claude-compatible clients |
 | 🪟 **Windows autostart** | Hidden VBS launcher for boot-time startup (optional) |
 
 ---
@@ -66,12 +68,47 @@ cp config.example.json config.json   # then edit
   "REQUEST_TIMEOUT": "15m",                  // upstream request timeout
   "API_KEYS": [],                            // optional: ["sk-..."], empty = open
   "HTTP_PROXY": "",                          // optional HTTP proxy for upstream
-  "MAX_REQUESTS_PER_MIN": 0                  // per-IP rate cap; 0 = unlimited
+  "MAX_REQUESTS_PER_MIN": 0,                 // per-IP rate cap; 0 = unlimited
+  "CORS_ORIGIN": "*"                         // CORS allow-origin; "*" = all
 }
 ```
 
 > Every setting can also be supplied as an environment variable
 > (`AUTH_TOKENS="a,b"`, `LISTEN_ADDR=":9000"`, `MAX_REQUESTS_PER_MIN=30`, …) — useful for Docker.
+
+### Anthropic Messages API (Claude Code compatible)
+
+The proxy also speaks the Anthropic Messages protocol at `/v1/messages` —
+requests are translated to OpenAI format upstream, and responses are
+translated back. Both streaming and non-streaming work.
+
+```bash
+curl http://localhost:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: your-key" \
+  -d '{
+    "model": "deepseek/deepseek-v4-flash",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+Configure Claude Code:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:8080
+export ANTHROPIC_AUTH_TOKEN=anything   # ignored unless API_KEYS is set
+export ANTHROPIC_MODEL=deepseek/deepseek-v4-flash
+```
+
+### CORS
+
+Browser-based clients work out of the box (`Access-Control-Allow-Origin: *`).
+Restrict with `CORS_ORIGIN`:
+
+```json
+{ "CORS_ORIGIN": "https://app.example.com" }
+```
 
 ### Rate limiting
 
