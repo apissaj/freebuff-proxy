@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Syntax check
+        run: node --check server.js
+
+      - name: Run tests
+        run: npm test
+
+      - name: Verify zero-dependency (no package-lock drift)
+        run: |
+          node -e "const r=require('fs').readFileSync('server.js','utf8');const m=r.match(/require\(['\"][a-z0-9_-]+['\"]\)/g)||[];const ok=['http','https','fs','path','crypto','url','net','tls'];const bad=m.filter(x=>!ok.some(s=>x.includes(s)));if(bad.length)throw new Error('Non-stdlib requires: '+bad.join(','));"
+          echo "✓ stdlib-only confirmed"

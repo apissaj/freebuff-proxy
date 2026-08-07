@@ -1389,7 +1389,35 @@ function log(msg) {
   console.log(`[${ts}] [FreebuffProxy] ${msg}`);
 }
 
-main().catch((err) => {
-  console.error('Fatal:', err);
-  process.exit(1);
-});
+// ── Entry point ──────────────────────────────────────────────────────────────
+// When required as a module (e.g. by tests), skip auto-start.
+// When executed directly (node server.js), start the server.
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('Fatal:', err);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  // Pure functions (unit-testable without starting the server)
+  anthropicToOpenAI,
+  openAIToAnthropic,
+  openAIChunkToAnthropicSSE,
+  injectFreebuffMarker,
+  accumulateSSEToJSON,
+  extractFinalJSONFromSSE,
+  parseDuration,
+  parseFreeAgents,
+  loadConfig,
+  // Runtime pieces (integration tests)
+  createTokenPool,
+  selectPool,
+  sleep,
+  sendJSON,
+  tokenPools,
+  nextPoolIdx,
+  // Constants used by tests
+  config,
+};

@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js --verbose"
+    "dev": "node server.js --verbose",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {},
   "engines": {

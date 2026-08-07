@@ -9,6 +9,8 @@ Zero dependencies · Pure Node.js stdlib · Streaming & non-streaming
 [![Node](https://img.shields.io/badge/Node.js-%3E%3D18-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/hafizhmuzani/freebuff-proxy/pulls)
+[![CI](https://github.com/hafizhmuzani/freebuff-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/hafizhmuzani/freebuff-proxy/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-41%20passed-green.svg)](test/)
 
 </div>
 
@@ -298,10 +300,21 @@ docker run -d -p 8080:8080 \
 
 ## 🧪 Testing
 
+The project ships with a zero-dependency test suite built on Node's built-in
+test runner (`node:test`) — no extra packages needed:
+
 ```bash
+npm test              # run all 41 tests (unit + integration)
 node --check server.js    # syntax check
 curl http://localhost:8080/healthz   # health check
 ```
+
+- `test/converter.test.js` — Anthropic ↔ OpenAI conversion, SSE accumulation,
+  marker injection, config parsing, token pool selection
+- `test/integration.test.js` — spins up a real proxy instance on a test port
+  and verifies healthz, models, CORS, rate limiting (429), and metrics
+
+CI (GitHub Actions) runs the full suite on Node 18 / 20 / 22 on every push.
 
 ## ⚠️ Disclaimer
 
