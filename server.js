@@ -51,10 +51,29 @@ let nextPoolIdx = 0;
 const rateBuckets = new Map(); // ip → { count, windowStart }
 const RATE_WINDOW_MS = 60 * 1000;
 
+// Runtime metrics (for /metrics endpoint)
+const metrics = {
+  startedAt: Date.now(),
+  totalRequests: 0,
+  totalSuccess: 0,
+  totalErrors: 0,
+  totalUpstreamErrors: 0,
+  totalTokens: 0, // freebuff runs started
+  byModel: {}, // model → { requests, success, errors, promptTokens, completionTokens }
+  byPool: {}, // pool name → { requests, errors, lastError, cooldownUntil }
+};
+
+// Optional upstream HTTP proxy agent (HTTP_PROXY config)
+let httpProxyAgent = null;
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 async function main() {
   log('Freebuff Proxy starting...');
+  if (config.HTTP_PROXY) {
+    httpProxyAgent = createProxyAgent(config.HTTP_PROXY);
+    log(`HTTP proxy enabled: ${config.HTTP_PROXY}`);
+  }
   for (let i = 0; i < config.AUTH_TOKENS.length; i++) {
     tokenPools.push(createTokenPool(config.AUTH_TOKENS[i], `token-${i + 1}`));
   }
@@ -167,7 +186,15 @@ async function handleAsync(req, res) {
       ok: true,
       models: allModels.length,
       tokens: tokenPools.length,
+      uptimeSec: Math.floor((Date.now() - metrics.startedAt) / 1000),
+      requests: metrics.totalRequests,
+      success: metrics.totalSuccess,
+      errors: metrics.totalErrors,
     });
+  }
+
+  if (url.pathname === '/metrics' && req.method === 'GET') {
+    return sendMetrics(res);
   }
 
   if (url.pathname === '/v1/models' && req.method === 'GET') {
@@ -240,9 +267,18 @@ async function handleChatCompletions(req, res) {
   const stream = !!payload.stream;
   payload = injectFreebuffMarker(payload);
 
+  // Metrics: count request per model
+  metrics.totalRequests++;
+  const m = (metrics.byModel[requestedModel] = metrics.byModel[requestedModel] || {
+    requests: 0, success: 0, errors: 0, promptTokens: 0, completionTokens: 0,
+  });
+  m.requests++;
+
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const pool = selectPool();
     if (!pool) {
+      metrics.totalErrors++;
+      m.errors++;
       return sendJSON(res, 502, {
         error: { message: 'no healthy token pool', type: 'server_error' },
       });
@@ -252,14 +288,19 @@ async function handleChatCompletions(req, res) {
     try {
       instanceId = await ensureSession(pool);
       if (!instanceId) {
+        metrics.totalErrors++;
+        m.errors++;
         return sendJSON(res, 503, {
           error: { message: 'freebuff waiting room queued', type: 'server_error' },
         });
       }
       runId = await startRun(pool, agentID);
+      metrics.totalTokens++;
     } catch (err) {
       log(`[${pool.name}] setup error: ${err.message}`);
       if (attempt === MAX_RETRIES - 1) {
+        metrics.totalErrors++;
+        m.errors++;
         return sendJSON(res, 502, {
           error: { message: err.message, type: 'server_error' },
         });
@@ -277,6 +318,20 @@ async function handleChatCompletions(req, res) {
 
     if (result.statusCode >= 200 && result.statusCode < 300) {
       log(`[${pool.name}] OK model=${requestedModel} run=${runId}`);
+      metrics.totalSuccess++;
+      m.success++;
+      // Token usage from upstream response (non-stream JSON only)
+      try {
+        const parsed = JSON.parse(result.body);
+        if (parsed.usage) {
+          m.promptTokens += parsed.usage.prompt_tokens || 0;
+          m.completionTokens += parsed.usage.completion_tokens || 0;
+        }
+      } catch {}
+    } else {
+      metrics.totalErrors++;
+      metrics.totalUpstreamErrors++;
+      m.errors++;
     }
     finishRun(pool, runId).catch(() => {});
 
@@ -290,6 +345,8 @@ async function handleChatCompletions(req, res) {
     return;
   }
 
+  metrics.totalErrors++;
+  m.errors++;
   sendJSON(res, 502, {
     error: { message: 'upstream failed after retries', type: 'server_error' },
   });
@@ -335,9 +392,18 @@ async function handleAnthropicMessages(req, res) {
   const openaiPayload = anthropicToOpenAI(payload);
   const marked = injectFreebuffMarker(openaiPayload);
 
+  // Metrics: count request per model
+  metrics.totalRequests++;
+  const m = (metrics.byModel[requestedModel] = metrics.byModel[requestedModel] || {
+    requests: 0, success: 0, errors: 0, promptTokens: 0, completionTokens: 0,
+  });
+  m.requests++;
+
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const pool = selectPool();
     if (!pool) {
+      metrics.totalErrors++;
+      m.errors++;
       return sendJSON(res, 502, {
         error: { message: 'no healthy token pool', type: 'server_error' },
       });
@@ -347,14 +413,19 @@ async function handleAnthropicMessages(req, res) {
     try {
       instanceId = await ensureSession(pool);
       if (!instanceId) {
+        metrics.totalErrors++;
+        m.errors++;
         return sendJSON(res, 503, {
           error: { message: 'freebuff waiting room queued', type: 'server_error' },
         });
       }
       runId = await startRun(pool, agentID);
+      metrics.totalTokens++;
     } catch (err) {
       log(`[${pool.name}] setup error: ${err.message}`);
       if (attempt === MAX_RETRIES - 1) {
+        metrics.totalErrors++;
+        m.errors++;
         return sendJSON(res, 502, {
           error: { message: err.message, type: 'server_error' },
         });
@@ -372,6 +443,19 @@ async function handleAnthropicMessages(req, res) {
 
     if (result.statusCode >= 200 && result.statusCode < 300) {
       log(`[${pool.name}] OK anthropic model=${requestedModel} run=${runId}`);
+      metrics.totalSuccess++;
+      m.success++;
+      try {
+        const parsed = JSON.parse(result.body);
+        if (parsed.usage) {
+          m.promptTokens += parsed.usage.prompt_tokens || 0;
+          m.completionTokens += parsed.usage.completion_tokens || 0;
+        }
+      } catch {}
+    } else {
+      metrics.totalErrors++;
+      metrics.totalUpstreamErrors++;
+      m.errors++;
     }
     finishRun(pool, runId).catch(() => {});
 
@@ -516,25 +600,179 @@ function openAIChunkToAnthropicSSE(chunk) {
   return out;
 }
 
+// ── Metrics ──────────────────────────────────────────────────────────────────
+
+/**
+ * Serve runtime metrics. Human-readable text by default;
+ * add ?format=json for machine-readable output.
+ */
+function sendMetrics(res) {
+  const format = new URL(res.req?.url || '/metrics', 'http://x').searchParams.get('format');
+  if (format === 'json') {
+    return sendJSON(res, 200, {
+      uptimeSec: Math.floor((Date.now() - metrics.startedAt) / 1000),
+      totalRequests: metrics.totalRequests,
+      totalSuccess: metrics.totalSuccess,
+      totalErrors: metrics.totalErrors,
+      totalUpstreamErrors: metrics.totalUpstreamErrors,
+      totalTokens: metrics.totalTokens,
+      byModel: metrics.byModel,
+      byPool: metrics.byPool,
+    });
+  }
+
+  const lines = [];
+  lines.push(`# freebuff_proxy_uptime_seconds ${Math.floor((Date.now() - metrics.startedAt) / 1000)}`);
+  lines.push(`# freebuff_proxy_requests_total ${metrics.totalRequests}`);
+  lines.push(`# freebuff_proxy_success_total ${metrics.totalSuccess}`);
+  lines.push(`# freebuff_proxy_errors_total ${metrics.totalErrors}`);
+  lines.push(`# freebuff_proxy_upstream_errors_total ${metrics.totalUpstreamErrors}`);
+  lines.push(`# freebuff_proxy_tokens_total ${metrics.totalTokens}`);
+  lines.push('');
+  for (const [model, m] of Object.entries(metrics.byModel)) {
+    lines.push(`freebuff_proxy_model_requests{model="${model}"} ${m.requests}`);
+    lines.push(`freebuff_proxy_model_success{model="${model}"} ${m.success}`);
+    lines.push(`freebuff_proxy_model_errors{model="${model}"} ${m.errors}`);
+    lines.push(`freebuff_proxy_model_prompt_tokens{model="${model}"} ${m.promptTokens}`);
+    lines.push(`freebuff_proxy_model_completion_tokens{model="${model}"} ${m.completionTokens}`);
+  }
+  for (const pool of tokenPools) {
+    const p = (metrics.byPool[pool.name] = metrics.byPool[pool.name] || { requests: 0, errors: 0, lastError: '', cooldownUntil: 0 });
+    lines.push(`freebuff_proxy_pool_errors{pool="${pool.name}"} ${p.errors}`);
+    lines.push(`freebuff_proxy_pool_cooldown_until{pool="${pool.name}"} ${p.cooldownUntil}`);
+  }
+  res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8' });
+  res.end(lines.join('\n') + '\n');
+}
+
+/**
+ * Track a request against a token pool (called on pool selection).
+ */
+function trackPoolRequest(pool, isError) {
+  const p = (metrics.byPool[pool.name] = metrics.byPool[pool.name] || {
+    requests: 0, errors: 0, lastError: '', cooldownUntil: 0,
+  });
+  p.requests++;
+  if (isError) p.errors++;
+  p.lastError = pool.lastError;
+  p.cooldownUntil = pool.cooldownUntil;
+}
+
+// ── Upstream HTTP proxy ──────────────────────────────────────────────────────
+
+/**
+ * Build an HTTP(S) agent that tunnels outbound requests through a proxy
+ * using the CONNECT method (absolute-form for http targets).
+ * Zero-dependency: net + tls only.
+ * Supports:
+ *   http://proxy:port          — plain HTTP proxy
+ *   http://user:pass@proxy:port — authenticated HTTP proxy
+ *   https://proxy:port         — TLS-to-proxy (rare)
+ */
+function createProxyAgent(proxyUrl) {
+  const parsed = new URL(proxyUrl);
+  const proxyHost = parsed.hostname;
+  const proxyPort = parseInt(parsed.port, 10) || (parsed.protocol === 'https:' ? 443 : 80);
+  const proxyIsTls = parsed.protocol === 'https:';
+  const proxyAuth = parsed.username
+    ? `Basic ${Buffer.from(`${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password || '')}`).toString('base64')}`
+    : null;
+
+  const net = require('net');
+  const tls = require('tls');
+
+  class TunnelAgent extends https.Agent {
+    createConnection(options, callback) {
+      const connectTarget = () => {
+        const socket = net.connect(proxyPort, proxyHost, () => {
+          let head = `CONNECT ${options.host}:${options.port || 443} HTTP/1.1\r\n`;
+          head += `Host: ${options.host}:${options.port || 443}\r\n`;
+          if (proxyAuth) head += `Proxy-Authorization: ${proxyAuth}\r\n`;
+          head += '\r\n';
+          socket.write(head);
+        });
+        let buffer = '';
+        const onData = (chunk) => {
+          buffer += chunk.toString();
+          const headerEnd = buffer.indexOf('\r\n\r\n');
+          if (headerEnd === -1) return;
+          const statusLine = buffer.slice(0, buffer.indexOf('\r\n'));
+          const status = parseInt(statusLine.split(' ')[1], 10);
+          socket.removeListener('data', onData);
+          if (status === 200) {
+            const rest = buffer.slice(headerEnd + 4);
+            if (rest.length) socket.unshift(Buffer.from(rest));
+            callback(null, socket);
+          } else {
+            socket.destroy();
+            callback(new Error(`proxy CONNECT failed: ${statusLine}`));
+          }
+        };
+        socket.on('data', onData);
+        socket.on('error', (err) => callback(err));
+      };
+
+      if (proxyIsTls) {
+        // TLS to the proxy itself, then CONNECT inside it.
+        const tlsSocket = tls.connect({ host: proxyHost, port: proxyPort, servername: proxyHost }, () => {
+          let head = `CONNECT ${options.host}:${options.port || 443} HTTP/1.1\r\n`;
+          head += `Host: ${options.host}:${options.port || 443}\r\n`;
+          if (proxyAuth) head += `Proxy-Authorization: ${proxyAuth}\r\n`;
+          head += '\r\n';
+          tlsSocket.write(head);
+        });
+        let buffer = '';
+        const onData = (chunk) => {
+          buffer += chunk.toString();
+          const headerEnd = buffer.indexOf('\r\n\r\n');
+          if (headerEnd === -1) return;
+          const statusLine = buffer.slice(0, buffer.indexOf('\r\n'));
+          const status = parseInt(statusLine.split(' ')[1], 10);
+          tlsSocket.removeListener('data', onData);
+          if (status === 200) {
+            const rest = buffer.slice(headerEnd + 4);
+            if (rest.length) tlsSocket.unshift(Buffer.from(rest));
+            callback(null, tlsSocket);
+          } else {
+            tlsSocket.destroy();
+            callback(new Error(`proxy CONNECT failed: ${statusLine}`));
+          }
+        };
+        tlsSocket.on('data', onData);
+        tlsSocket.on('error', (err) => callback(err));
+        return tlsSocket;
+      }
+
+      connectTarget();
+      return undefined; // socket delivered via callback
+    }
+  }
+
+  return new TunnelAgent({ keepAlive: true });
+}
+
 function sendUpstream(pool, apiPath, body, stream, requestedModel, runId) {
   return new Promise((resolve) => {
     const url = new URL(apiPath, config.UPSTREAM_BASE_URL);
     const transport = url.protocol === 'https:' ? https : http;
 
-    const req = transport.request(
-      {
-        method: 'POST',
-        hostname: url.hostname,
-        port: url.port || 443,
-        path: url.pathname,
-        headers: {
-          Authorization: `Bearer ${pool.token}`,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          'User-Agent': 'freebuff-proxy/1.0',
-        },
-        timeout: parseDuration(config.REQUEST_TIMEOUT),
+    const options = {
+      method: 'POST',
+      hostname: url.hostname,
+      port: url.port || 443,
+      path: url.pathname,
+      headers: {
+        Authorization: `Bearer ${pool.token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'User-Agent': 'freebuff-proxy/1.0',
       },
+      timeout: parseDuration(config.REQUEST_TIMEOUT),
+    };
+    if (httpProxyAgent) options.agent = httpProxyAgent;
+
+    const req = transport.request(
+      options,
       (upstreamResp) => {
         if (upstreamResp.statusCode < 400) {
           const ct = (upstreamResp.headers['content-type'] || '').toLowerCase();
@@ -733,6 +971,7 @@ function sessionRequest(method, authToken, instanceId) {
         port: url.port || 443,
         path: url.pathname,
         headers,
+        ...(httpProxyAgent ? { agent: httpProxyAgent } : {}),
       },
       (res) => {
         const chunks = [];
@@ -777,6 +1016,7 @@ function startRun(pool, agentId) {
           Accept: 'application/json',
           'User-Agent': 'freebuff-proxy/1.0',
         },
+        ...(httpProxyAgent ? { agent: httpProxyAgent } : {}),
       },
       (res) => {
         const chunks = [];
@@ -819,6 +1059,7 @@ function finishRun(pool, runId) {
           'Content-Type': 'application/json',
           'User-Agent': 'freebuff-proxy/1.0',
         },
+        ...(httpProxyAgent ? { agent: httpProxyAgent } : {}),
       },
       (res) => {
         res.resume();

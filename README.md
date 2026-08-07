@@ -30,6 +30,8 @@ Zero dependencies · Pure Node.js stdlib · Streaming & non-streaming
 | 🔒 **API key auth** | Optional `x-api-key` / `Bearer` gate in front of the proxy |
 | 🌐 **CORS** | `Access-Control-Allow-Origin` headers — usable from browser apps |
 | 🤖 **Anthropic API** | `/v1/messages` endpoint — works with Claude Code & Claude-compatible clients |
+| 🕵️ **HTTP proxy** | Tunnel upstream traffic through a proxy (`HTTP_PROXY`) — stealth & geo |
+| 📊 **Metrics** | `/metrics` endpoint — requests, per-model usage, token health |
 | 🪟 **Windows autostart** | Hidden VBS launcher for boot-time startup (optional) |
 
 ---
@@ -108,6 +110,38 @@ Restrict with `CORS_ORIGIN`:
 
 ```json
 { "CORS_ORIGIN": "https://app.example.com" }
+```
+
+### HTTP proxy
+
+Route all upstream traffic (session, runs, chat) through an HTTP proxy —
+useful for stealth, geo-targeting, or company networks:
+
+```json
+{ "HTTP_PROXY": "http://proxy.example.com:8080" }
+```
+
+Authenticated proxies are supported:
+
+```json
+{ "HTTP_PROXY": "http://user:pass@proxy.example.com:8080" }
+```
+
+### Metrics
+
+`GET /metrics` returns Prometheus-style metrics:
+
+```bash
+curl http://localhost:8080/metrics
+# freebuff_proxy_uptime_seconds 1234
+# freebuff_proxy_requests_total 42
+# freebuff_proxy_model_requests{model="deepseek/deepseek-v4-flash"} 10
+```
+
+Add `?format=json` for machine-readable output:
+
+```bash
+curl http://localhost:8080/metrics?format=json
 ```
 
 ### Rate limiting
