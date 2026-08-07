@@ -1,0 +1,10 @@
+node_modules/
+config.json
+server.log
+*.log
+.git/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+docker-compose.yml

@@ -32,6 +32,9 @@ Zero dependencies · Pure Node.js stdlib · Streaming & non-streaming
 | 🤖 **Anthropic API** | `/v1/messages` endpoint — works with Claude Code & Claude-compatible clients |
 | 🕵️ **HTTP proxy** | Tunnel upstream traffic through a proxy (`HTTP_PROXY`) — stealth & geo |
 | 📊 **Metrics** | `/metrics` endpoint — requests, per-model usage, token health |
+| 🐳 **Docker** | Official `Dockerfile` + `docker-compose.yml` — deploy anywhere |
+| 🛡️ **Body limit** | `MAX_BODY_SIZE` — reject oversized requests (`413`) |
+| 🧹 **Graceful shutdown** | FINISHes active Freebuff runs before exit |
 | 🪟 **Windows autostart** | Hidden VBS launcher for boot-time startup (optional) |
 
 ---
@@ -71,7 +74,8 @@ cp config.example.json config.json   # then edit
   "API_KEYS": [],                            // optional: ["sk-..."], empty = open
   "HTTP_PROXY": "",                          // optional HTTP proxy for upstream
   "MAX_REQUESTS_PER_MIN": 0,                 // per-IP rate cap; 0 = unlimited
-  "CORS_ORIGIN": "*"                         // CORS allow-origin; "*" = all
+  "CORS_ORIGIN": "*",                        // CORS allow-origin; "*" = all
+  "MAX_BODY_SIZE": 10485760                  // max request body in bytes (10MB)
 }
 ```
 
@@ -258,6 +262,39 @@ in use (double-start), the proxy **exits silently** instead of crashing.
 ```
 
 Every request: `session → agent-run (START) → chat/completions → agent-run (FINISH)`.
+
+## 🐳 Docker
+
+```bash
+# 1. Create config.json with your tokens first
+cp config.example.json config.json   # then add AUTH_TOKENS
+
+# 2. Build & run
+docker compose up -d --build
+
+# 3. Verify
+curl http://localhost:8080/healthz
+```
+
+Or run the image directly:
+
+```bash
+docker build -t freebuff-proxy .
+docker run -d --name freebuff-proxy \
+  -p 8080:8080 \
+  -v "$PWD/config.json:/app/config.json:ro" \
+  --restart unless-stopped \
+  freebuff-proxy
+```
+
+All config keys work as environment variables too:
+
+```bash
+docker run -d -p 8080:8080 \
+  -e AUTH_TOKENS="token1,token2" \
+  -e MAX_REQUESTS_PER_MIN=30 \
+  freebuff-proxy
+```
 
 ## 🧪 Testing
 

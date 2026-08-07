@@ -122,8 +122,37 @@ async function main() {
     log(`Token pools: ${tokenPools.length}`);
   });
 
-  process.on('SIGINT', () => process.exit(0));
-  process.on('SIGTERM', () => process.exit(0));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+}
+
+/**
+ * Graceful shutdown: FINISH any active Freebuff runs so they don't leak,
+ * then exit. Falls back to force-exit after a timeout.
+ */
+function shutdown(signal) {
+  log(`Received ${signal} — shutting down gracefully...`);
+  const activeRuns = tokenPools.filter((p) => p.activeRun && p.activeRun.runId);
+  if (activeRuns.length === 0) {
+    log('No active runs — exiting immediately.');
+    process.exit(0);
+  }
+  log(`Finishing ${activeRuns.length} active run(s)...`);
+  Promise.all(
+    activeRuns.map((pool) =>
+      finishRun(pool, pool.activeRun.runId)
+        .then(() => log(`[${pool.name}] run ${pool.activeRun.runId} finished`))
+        .catch(() => {}),
+    ),
+  ).then(() => {
+    log('All runs finished — exiting.');
+    process.exit(0);
+  });
+  // Safety timeout: don't hang forever waiting on upstream.
+  setTimeout(() => {
+    log('Shutdown timeout — forcing exit.');
+    process.exit(0);
+  }, 10 * 1000);
 }
 
 // ── HTTP routing ─────────────────────────────────────────────────────────────
@@ -141,6 +170,12 @@ function handleRequest(req, res) {
   }
 
   handleAsync(req, res).catch((err) => {
+    if (err && err.message && err.message.includes('too large')) {
+      log(`413 ${req.method} ${req.url}: ${err.message}`);
+      return sendJSON(res, 413, {
+        error: { message: err.message, type: 'invalid_request_error' },
+      });
+    }
     log(`UNHANDLED ${req.method} ${req.url}: ${err.message}`);
     sendJSON(res, 500, { error: { message: err.message, type: 'server_error' } });
   });
@@ -1175,7 +1210,17 @@ function sendJSON(res, status, data) {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on('data', (c) => chunks.push(c));
+    let size = 0;
+    const limit = config.MAX_BODY_SIZE || 10 * 1024 * 1024;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limit) {
+        reject(new Error(`request body too large (limit ${limit} bytes)`));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
     req.on('end', () => resolve(Buffer.concat(chunks).toString()));
     req.on('error', reject);
   });
@@ -1300,6 +1345,7 @@ function loadConfig(configPath) {
     HTTP_PROXY: '',
     MAX_REQUESTS_PER_MIN: 0, // 0 = unlimited (disabled)
     CORS_ORIGIN: '*', // '*' = allow all origins; set e.g. "https://app.example.com"
+    MAX_BODY_SIZE: 10 * 1024 * 1024, // 10MB max request body (bytes)
   };
   let fileConfig = {};
   const fullPath = path.resolve(configPath);
@@ -1321,6 +1367,7 @@ function loadConfig(configPath) {
     HTTP_PROXY: 'HTTP_PROXY',
     MAX_REQUESTS_PER_MIN: 'MAX_REQUESTS_PER_MIN',
     CORS_ORIGIN: 'CORS_ORIGIN',
+    MAX_BODY_SIZE: 'MAX_BODY_SIZE',
   };
   const cfg = { ...defaults, ...fileConfig };
   for (const [key, envKey] of Object.entries(envMap)) {

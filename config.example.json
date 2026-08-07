@@ -7,5 +7,6 @@
   "API_KEYS": [],
   "HTTP_PROXY": "",
   "MAX_REQUESTS_PER_MIN": 0,
-  "CORS_ORIGIN": "*"
+  "CORS_ORIGIN": "*",
+  "MAX_BODY_SIZE": 10485760
 }

@@ -1,0 +1,25 @@
+services:
+  freebuff-proxy:
+    build: .
+    container_name: freebuff-proxy
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount your real config (with tokens). Create config.json first.
+      - ./config.json:/app/config.json:ro
+    environment:
+      # Optional overrides — all config keys work as env vars too
+      - LISTEN_ADDR=:8080
+      - ROTATION_INTERVAL=6h
+      - REQUEST_TIMEOUT=15m
+      - MAX_REQUESTS_PER_MIN=0
+      - CORS_ORIGIN=*
+      # - HTTP_PROXY=http://proxy.example.com:8080
+      # - API_KEYS=sk-1,sk-2
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
