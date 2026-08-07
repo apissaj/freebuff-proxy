@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Secrets — NEVER commit real credentials
+config.json
+
+# Runtime artifacts
+server.log
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
