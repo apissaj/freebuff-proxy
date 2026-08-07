@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * Freebuff Proxy — OpenAI-compatible proxy for Freebuff (Codebuff Cloud)
  *

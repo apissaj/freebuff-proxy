@@ -43,12 +43,34 @@ Zero dependencies · Pure Node.js stdlib · Streaming & non-streaming
 
 ## 📦 Installation
 
+**Option A — npm (recommended, global CLI):**
+
 ```bash
-# Clone (or copy the folder)
+# Install globally
+npm install -g freebuff-proxy
+
+# Create your config
+cp $(npm root -g)/freebuff-proxy/config.example.json config.json
+# → add your Freebuff token to AUTH_TOKENS
+
+# Run from anywhere
+freebuff-proxy
+```
+
+**Option B — clone (for development / contributions):**
+
+```bash
 git clone https://github.com/hafizhmuzani/freebuff-proxy.git
 cd freebuff-proxy
 
 # No npm install needed — zero dependencies!
+npm start
+```
+
+**Option C — Docker:**
+
+```bash
+docker compose up -d --build   # see Docker section below
 ```
 
 ## 🔑 Getting a Freebuff token
@@ -315,6 +337,16 @@ curl http://localhost:8080/healthz   # health check
   and verifies healthz, models, CORS, rate limiting (429), and metrics
 
 CI (GitHub Actions) runs the full suite on Node 18 / 20 / 22 on every push.
+
+## 🤝 Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for the full
+guide — setup, testing, code style, and PR workflow. The project is strictly
+**zero-dependency**: contributions must use only Node.js stdlib.
+
+- 🐛 Found a bug? [Open an issue](https://github.com/hafizhmuzani/freebuff-proxy/issues/new?template=bug_report.md)
+- ✨ Have an idea? [Request a feature](https://github.com/hafizhmuzani/freebuff-proxy/issues/new?template=feature_request.md)
+- 🚀 Ready to code? Fork, branch, test, and PR.
 
 ## ⚠️ Disclaimer
 

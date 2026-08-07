@@ -1,15 +1,48 @@
 {
   "name": "freebuff-proxy",
   "version": "1.0.0",
-  "description": "Standalone OpenAI-compatible proxy for Freebuff/Codebuff",
+  "description": "Standalone OpenAI/Anthropic-compatible proxy for Freebuff (Codebuff Cloud) — free access to frontier models through your own Freebuff account. Zero dependencies.",
   "main": "server.js",
+  "bin": {
+    "freebuff-proxy": "server.js"
+  },
+  "files": [
+    "server.js",
+    "config.example.json",
+    "Dockerfile",
+    "docker-compose.yml",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js --verbose",
     "test": "node --test test/*.test.js"
   },
-  "dependencies": {},
+  "keywords": [
+    "freebuff",
+    "codebuff",
+    "proxy",
+    "openai",
+    "anthropic",
+    "llm",
+    "ai",
+    "chat-completions",
+    "zero-dependency",
+    "cli"
+  ],
   "engines": {
     "node": ">=18.0.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hafizhmuzani/freebuff-proxy.git"
+  },
+  "homepage": "https://github.com/hafizhmuzani/freebuff-proxy#readme",
+  "bugs": {
+    "url": "https://github.com/hafizhmuzani/freebuff-proxy/issues"
+  },
+  "license": "MIT",
+  "dependencies": {},
+  "author": "Hafizh Muzani"
 }
