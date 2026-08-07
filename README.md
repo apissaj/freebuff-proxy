@@ -25,6 +25,8 @@ Zero dependencies · Pure Node.js stdlib · Streaming & non-streaming
 | 🎭 **Auto system marker** | Injects Freebuff's required *"You are Buffy"* marker when missing |
 | 🔁 **Session management** | Handles Freebuff waiting rooms, session expiry, and retries automatically |
 | 🗝️ **Multi-token round-robin** | Rotate several Freebuff tokens for higher throughput |
+| 🔄 **Token rotation** | Scheduled pool reset (`ROTATION_INTERVAL`) keeps throttled tokens fresh |
+| 🚦 **Rate limiting** | Optional per-IP cap (`MAX_REQUESTS_PER_MIN`) with `429` responses |
 | 🔒 **API key auth** | Optional `x-api-key` / `Bearer` gate in front of the proxy |
 | 🪟 **Windows autostart** | Hidden VBS launcher for boot-time startup (optional) |
 
@@ -63,12 +65,28 @@ cp config.example.json config.json   # then edit
   "ROTATION_INTERVAL": "6h",                 // token rotation interval
   "REQUEST_TIMEOUT": "15m",                  // upstream request timeout
   "API_KEYS": [],                            // optional: ["sk-..."], empty = open
-  "HTTP_PROXY": ""                           // optional HTTP proxy for upstream
+  "HTTP_PROXY": "",                          // optional HTTP proxy for upstream
+  "MAX_REQUESTS_PER_MIN": 0                  // per-IP rate cap; 0 = unlimited
 }
 ```
 
 > Every setting can also be supplied as an environment variable
-> (`AUTH_TOKENS="a,b"`, `LISTEN_ADDR=":9000"`, …) — useful for Docker.
+> (`AUTH_TOKENS="a,b"`, `LISTEN_ADDR=":9000"`, `MAX_REQUESTS_PER_MIN=30`, …) — useful for Docker.
+
+### Rate limiting
+
+Set `MAX_REQUESTS_PER_MIN` to a positive integer to cap chat requests per IP
+(0 = disabled). Exceeding the cap returns `429` with `Retry-After: 60`:
+
+```json
+{ "MAX_REQUESTS_PER_MIN": 30 }   // max 30 chat requests/min/IP
+```
+
+### Token rotation
+
+With multiple `AUTH_TOKENS`, requests round-robin across tokens. Every
+`ROTATION_INTERVAL`, all pool cooldowns reset so a throttled token gets a
+fresh chance — ideal for long-running sessions.
 
 ## 🚀 Usage
 

@@ -47,6 +47,10 @@ let allModels = [];
 const tokenPools = [];
 let nextPoolIdx = 0;
 
+// Per-IP rate limiting (sliding window per minute)
+const rateBuckets = new Map(); // ip → { count, windowStart }
+const RATE_WINDOW_MS = 60 * 1000;
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 async function main() {
@@ -60,6 +64,25 @@ async function main() {
   }
   await refreshModels();
   setInterval(refreshModels, MODEL_REFRESH_INTERVAL);
+
+  // Token rotation: periodically reset pool state so a throttled/busy
+  // token gets a fresh chance. Interval from ROTATION_INTERVAL config.
+  const rotationMs = parseDuration(config.ROTATION_INTERVAL || '6h');
+  setInterval(() => {
+    for (const pool of tokenPools) {
+      pool.cooldownUntil = 0;
+      pool.lastError = '';
+    }
+    log(`Token rotation: reset ${tokenPools.length} pool(s) (interval ${config.ROTATION_INTERVAL})`);
+  }, rotationMs);
+
+  // Rate-limit bucket janitor: drop stale buckets so the map never grows unbounded.
+  setInterval(() => {
+    const now = Date.now();
+    for (const [ip, bucket] of rateBuckets) {
+      if (now - bucket.windowStart > RATE_WINDOW_MS) rateBuckets.delete(ip);
+    }
+  }, RATE_WINDOW_MS);
 
   const server = http.createServer(handleRequest);
   const port = parseInt(config.LISTEN_ADDR.replace(':', ''), 10) || 8080;
@@ -95,6 +118,32 @@ function handleRequest(req, res) {
 
 async function handleAsync(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
+
+  // Rate limiting: only applies to chat completions, skips healthz/models.
+  const isChatPath = url.pathname === '/v1/chat/completions' && req.method === 'POST';
+  if (isChatPath && config.MAX_REQUESTS_PER_MIN > 0) {
+    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    const bucket = rateBuckets.get(ip) || { count: 0, windowStart: now };
+    if (now - bucket.windowStart > RATE_WINDOW_MS) {
+      bucket.count = 0;
+      bucket.windowStart = now;
+    }
+    bucket.count++;
+    if (bucket.count > config.MAX_REQUESTS_PER_MIN) {
+      log(`Rate limit exceeded for ${ip}: ${bucket.count}/${config.MAX_REQUESTS_PER_MIN} per min`);
+      res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '60' });
+      return res.end(
+        JSON.stringify({
+          error: {
+            message: `Rate limit exceeded: ${config.MAX_REQUESTS_PER_MIN} requests per minute. Try again later.`,
+            type: 'rate_limit_error',
+          },
+        }),
+      );
+    }
+    rateBuckets.set(ip, bucket);
+  }
 
   if (config.API_KEYS.length > 0 && !isAuthorized(req)) {
     return sendJSON(res, 401, {
@@ -772,6 +821,7 @@ function loadConfig(configPath) {
     REQUEST_TIMEOUT: '15m',
     API_KEYS: [],
     HTTP_PROXY: '',
+    MAX_REQUESTS_PER_MIN: 0, // 0 = unlimited (disabled)
   };
   let fileConfig = {};
   const fullPath = path.resolve(configPath);
@@ -791,6 +841,7 @@ function loadConfig(configPath) {
     REQUEST_TIMEOUT: 'REQUEST_TIMEOUT',
     API_KEYS: 'API_KEYS',
     HTTP_PROXY: 'HTTP_PROXY',
+    MAX_REQUESTS_PER_MIN: 'MAX_REQUESTS_PER_MIN',
   };
   const cfg = { ...defaults, ...fileConfig };
   for (const [key, envKey] of Object.entries(envMap)) {
