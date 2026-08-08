@@ -75,12 +75,36 @@ docker compose up -d --build   # see Docker section below
 
 ## 🔑 Getting a Freebuff token
 
+**Option A — Web (easiest, no CLI):**
+
+1. Open <https://freebuff.llm.pm> — a community login helper
+2. Click **Generate Login URL**, then open the generated link
+3. Sign in with **GitHub or Google** (a brand-new account = a brand-new 6-session quota)
+4. After login, copy the full callback URL and paste it back on the page
+5. Click **Verify & Fetch Token** → your `authToken` is displayed
+6. Add it to `config.json` → `AUTH_TOKENS`
+
+**Option B — CLI:**
+
 1. Install the Freebuff CLI: `npm i -g freebuff`
 2. Run `freebuff` and log in (opens browser)
 3. Your token is stored at:
    - **Windows:** `C:\Users\<you>\.config\manicode\credentials.json`
    - **Linux/macOS:** `~/.config/manicode/credentials.json`
 4. Copy the token into `config.json` → `AUTH_TOKENS`
+
+**Multi-account tip:** Each Freebuff account gets a daily quota of **6 sessions**
+(limited mode). Configure **one token per account** in `AUTH_TOKENS` to multiply
+your daily quota:
+
+```json
+{
+  "AUTH_TOKENS": ["token-account-1", "token-account-2", "token-account-3"]
+}
+```
+
+The proxy round-robins between tokens and automatically fails over when one
+hits its quota (`429`) or is temporarily throttled.
 
 ## ⚙️ Configuration
 
