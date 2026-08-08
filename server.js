@@ -787,6 +787,18 @@ function createProxyAgent(proxyUrl) {
   return new TunnelAgent({ keepAlive: true });
 }
 
+// HAFIZH-PATCH: pure helper — decide if an upstream error is quota/limit
+// (429 quota exhausted, 503 overloaded, 409 with quota/limit/capacity wording)
+// so the pool is cooled down and selectPool() fails over to the next token.
+function isQuotaError(statusCode, errBody) {
+  const lower = String(errBody || '').toLowerCase();
+  if (statusCode === 429 || statusCode === 503) return true;
+  if (statusCode === 409) {
+    return lower.includes('quota') || lower.includes('limit') || lower.includes('capacity');
+  }
+  return false;
+}
+
 function sendUpstream(pool, apiPath, body, stream, requestedModel, runId) {
   return new Promise((resolve) => {
     const url = new URL(apiPath, config.UPSTREAM_BASE_URL);
@@ -890,6 +902,18 @@ function sendUpstream(pool, apiPath, body, stream, requestedModel, runId) {
             ) {
               pool.session = null;
               resolve({ shouldRetry: true, reason: 'session invalid' });
+              return;
+            }
+            // HAFIZH-PATCH: pool cooldown on quota/limit errors so selectPool()
+            // fails over to the next token instead of hammering the same one.
+            // 429 = quota exhausted (6/day), 503 = overloaded/capacity deferred,
+            // 409 session_model_mismatch etc. Cool down this pool and retry.
+            if (isQuotaError(upstreamResp.statusCode, errBody)) {
+              const cooldownMs = parseDuration(config.POOL_COOLDOWN || '10m');
+              pool.cooldownUntil = Date.now() + cooldownMs;
+              pool.lastError = errBody.slice(0, 200);
+              log(`[${pool.name}] quota/limit (${upstreamResp.statusCode}) → cooldown ${cooldownMs}ms: ${errBody.slice(0, 120)}`);
+              resolve({ shouldRetry: true, reason: `cooldown ${upstreamResp.statusCode}` });
               return;
             }
             resolve({
@@ -1412,6 +1436,7 @@ module.exports = {
   parseDuration,
   parseFreeAgents,
   loadConfig,
+  isQuotaError,
   // Runtime pieces (integration tests)
   createTokenPool,
   selectPool,

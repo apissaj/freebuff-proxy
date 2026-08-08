@@ -214,3 +214,21 @@ test('createTokenPool: initial state', () => {
   assert.strictEqual(p.lastError, '');
   assert.strictEqual(p.cooldownUntil, 0);
 });
+
+// HAFIZH-PATCH: quota/limit detection → pool cooldown → failover
+test('isQuotaError: 429 and 503 always quota', () => {
+  assert.strictEqual(s.isQuotaError(429, '{}'), true);
+  assert.strictEqual(s.isQuotaError(503, '{"error":"overloaded"}'), true);
+});
+
+test('isQuotaError: 409 with quota/limit/capacity wording', () => {
+  assert.strictEqual(s.isQuotaError(409, '{"error":"free_mode_capacity_deferred"}'), true);
+  assert.strictEqual(s.isQuotaError(409, '{"error":"quota exceeded"}'), true);
+  assert.strictEqual(s.isQuotaError(409, '{"error":"rate limit"}'), true);
+});
+
+test('isQuotaError: 409 model mismatch is NOT quota (session bound, not exhausted)', () => {
+  assert.strictEqual(s.isQuotaError(409, '{"error":"session_model_mismatch"}'), false);
+  assert.strictEqual(s.isQuotaError(400, 'bad request'), false);
+  assert.strictEqual(s.isQuotaError(200, ''), false);
+});
