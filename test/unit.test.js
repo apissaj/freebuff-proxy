@@ -229,6 +229,21 @@ test('isQuotaError: 409 with quota/limit/capacity wording', () => {
 
 test('isQuotaError: 409 model mismatch is NOT quota (session bound, not exhausted)', () => {
   assert.strictEqual(s.isQuotaError(409, '{"error":"session_model_mismatch"}'), false);
+  assert.strictEqual(s.isQuotaError(409, '{"error":"session_superseded"}'), false);
   assert.strictEqual(s.isQuotaError(400, 'bad request'), false);
   assert.strictEqual(s.isQuotaError(200, ''), false);
+});
+
+// HAFIZH-PATCH: session_model_mismatch message contains "Limited free access is
+// only available with DeepSeek V4 Flash or MiMo 2.5." — the word "Limited"
+// (limit) previously false-positived isQuotaError → both pools cooled 10min.
+test('isQuotaError: 409 session_model_mismatch WITH "Limited" wording is NOT quota', () => {
+  const body = '{"error":"session_model_mismatch","message":"Limited free access is only available with DeepSeek V4 Flash or MiMo 2.5."}';
+  assert.strictEqual(s.isQuotaError(409, body), false);
+});
+
+// Real quota wording still detected even at 409
+test('isQuotaError: 409 with real quota wording still detected', () => {
+  assert.strictEqual(s.isQuotaError(409, '{"error":"free_mode_capacity_deferred"}'), true);
+  assert.strictEqual(s.isQuotaError(409, '{"error":"rate limit exceeded"}'), true);
 });

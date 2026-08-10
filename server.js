@@ -790,10 +790,17 @@ function createProxyAgent(proxyUrl) {
 // HAFIZH-PATCH: pure helper — decide if an upstream error is quota/limit
 // (429 quota exhausted, 503 overloaded, 409 with quota/limit/capacity wording)
 // so the pool is cooled down and selectPool() fails over to the next token.
+// IMPORTANT: 409 session_model_mismatch / session_superseded / session_expired
+// are SESSION issues, NOT quota — they must NOT cool down the pool (else both
+// tokens get locked 10min for a non-quota error).
 function isQuotaError(statusCode, errBody) {
   const lower = String(errBody || '').toLowerCase();
   if (statusCode === 429 || statusCode === 503) return true;
   if (statusCode === 409) {
+    if (lower.includes('session_model_mismatch') ||
+        lower.includes('session_superseded') ||
+        lower.includes('session_expired') ||
+        lower.includes('session_invalid')) return false;
     return lower.includes('quota') || lower.includes('limit') || lower.includes('capacity');
   }
   return false;
