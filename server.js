@@ -322,7 +322,7 @@ async function handleChatCompletions(req, res) {
 
     let instanceId, runId;
     try {
-      instanceId = await ensureSession(pool);
+      instanceId = await ensureSession(pool, requestedModel);
       if (!instanceId) {
         metrics.totalErrors++;
         m.errors++;
@@ -447,7 +447,7 @@ async function handleAnthropicMessages(req, res) {
 
     let instanceId, runId;
     try {
-      instanceId = await ensureSession(pool);
+      instanceId = await ensureSession(pool, requestedModel);
       if (!instanceId) {
         metrics.totalErrors++;
         m.errors++;
@@ -911,6 +911,16 @@ function sendUpstream(pool, apiPath, body, stream, requestedModel, runId) {
               resolve({ shouldRetry: true, reason: 'session invalid' });
               return;
             }
+            // HAFIZH-PATCH: session bound to wrong model → invalidate session and
+            // retry with a fresh session for the requested model. The x-freebuff-model
+            // header on session POST should prevent this, but a race (concurrent
+            // requests creating sessions) can still leave a mismatched session.
+            if (errBody.includes('session_model_mismatch')) {
+              pool.session = null;
+              log(`[${pool.name}] session_model_mismatch → invalidating session, retry (attempt ${attempt || 0})`);
+              resolve({ shouldRetry: true, reason: 'session model mismatch' });
+              return;
+            }
             // HAFIZH-PATCH: pool cooldown on quota/limit errors so selectPool()
             // fails over to the next token instead of hammering the same one.
             // 429 = quota exhausted (6/day), 503 = overloaded/capacity deferred,
@@ -968,7 +978,7 @@ function selectPool() {
   return null;
 }
 
-async function ensureSession(pool) {
+async function ensureSession(pool, requestedModel) {
   const now = Date.now();
   if (pool.session && pool.session.status === 'active' && pool.session.instanceId) {
     if (!pool.session.expiresAt || pool.session.expiresAt > now + 5000) {
@@ -980,7 +990,7 @@ async function ensureSession(pool) {
   if (pool.session && pool.session.status === 'queued' && pool.session.instanceId) {
     resp = await sessionRequest('GET', pool.token, pool.session.instanceId);
   } else {
-    resp = await sessionRequest('POST', pool.token);
+    resp = await sessionRequest('POST', pool.token, null, requestedModel);
   }
 
   for (let i = 0; i < 20; i++) {
@@ -1019,7 +1029,7 @@ async function ensureSession(pool) {
   throw new Error('session loop exhausted');
 }
 
-function sessionRequest(method, authToken, instanceId) {
+function sessionRequest(method, authToken, instanceId, model) {
   return new Promise((resolve, reject) => {
     const url = new URL('/api/v1/freebuff/session', config.UPSTREAM_BASE_URL);
     const transport = url.protocol === 'https:' ? https : http;
@@ -1030,6 +1040,10 @@ function sessionRequest(method, authToken, instanceId) {
     };
     if (method === 'POST') headers['Content-Type'] = 'application/json';
     if (method === 'GET' && instanceId) headers['x-freebuff-instance-id'] = instanceId;
+    // HAFIZH-PATCH: bind session to the requested model, else Freebuff defaults
+    // to deepseek-v4-flash and ANY other model request fails with
+    // session_model_mismatch ("Limited free access is only available with...").
+    if (method === 'POST' && model) headers['x-freebuff-model'] = model;
 
     const req = transport.request(
       {
