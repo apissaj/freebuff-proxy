@@ -321,3 +321,43 @@ test('hasQuotaRemaining: false on upstream error (conservative)', async () => {
   const mock = async () => { throw new Error('upstream down'); };
   assert.strictEqual(await s.hasQuotaRemaining(pool, mock), false);
 });
+
+// ── Envelope injection (trefeon parity) ─────────────────────────────────────
+test('injectUpstreamMetadata: adds provider.data_collection, stop cb_easp, stream=true', () => {
+  const { injectUpstreamMetadata } = require('../server.js');
+  const out = JSON.parse(injectUpstreamMetadata(
+    { messages: [{ role: 'user', content: 'hi' }] },
+    'deepseek/deepseek-v4-flash',
+    'run-123',
+    'inst-456',
+  ));
+  assert.equal(out.provider.data_collection, 'deny');
+  assert.deepEqual(out.stop, ['cb_easp']);
+  assert.equal(out.stream, true);
+  assert.equal(out.model, 'deepseek/deepseek-v4-flash');
+  assert.equal(out.codebuff_metadata.run_id, 'run-123');
+  assert.equal(out.codebuff_metadata.freebuff_instance_id, 'inst-456');
+  assert.equal(out.codebuff_metadata.cost_mode, 'free');
+});
+
+test('injectUpstreamMetadata: preserves client stop if present', () => {
+  const { injectUpstreamMetadata } = require('../server.js');
+  const out = JSON.parse(injectUpstreamMetadata(
+    { messages: [], stop: ['custom'] },
+    'deepseek/deepseek-v4-flash',
+    'run-1',
+    null,
+  ));
+  assert.deepEqual(out.stop, ['custom']);
+});
+
+test('injectUpstreamMetadata: normalizes developer role to system', () => {
+  const { injectUpstreamMetadata } = require('../server.js');
+  const out = JSON.parse(injectUpstreamMetadata(
+    { messages: [{ role: 'developer', content: 'x' }] },
+    'm',
+    'r',
+    null,
+  ));
+  assert.equal(out.messages[0].role, 'system');
+});

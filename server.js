@@ -1257,6 +1257,18 @@ function injectUpstreamMetadata(payload, model, runId, instanceId) {
     client_id: crypto.randomUUID(),
     ...(instanceId ? { freebuff_instance_id: instanceId } : {}),
   };
+  // HAFIZH-PATCH (from trefeon/freebuff-proxy research): the upstream free-mode
+  // gate fingerprints official-CLI traffic — provider.data_collection=deny and
+  // the cb_easp stop sentinel are part of that envelope. Without them the
+  // upstream may treat us as a non-CLI client and rate-limit harder (persistent
+  // 429 "free-models-per-day-high-balance" despite remaining quota).
+  cloned.provider = { data_collection: 'deny' };
+  if (!cloned.stop) {
+    cloned.stop = ['cb_easp'];
+  }
+  // Force streaming — the CLI always streams; non-stream requests are the
+  // fingerprint of an API client and get throttled / rejected.
+  cloned.stream = true;
   return JSON.stringify(cloned);
 }
 
@@ -1511,6 +1523,7 @@ module.exports = {
   openAIToAnthropic,
   openAIChunkToAnthropicSSE,
   injectFreebuffMarker,
+  injectUpstreamMetadata,
   accumulateSSEToJSON,
   extractFinalJSONFromSSE,
   parseDuration,
