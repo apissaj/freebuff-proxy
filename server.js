@@ -330,7 +330,7 @@ async function handleChatCompletions(req, res) {
           error: { message: 'freebuff waiting room queued', type: 'server_error' },
         });
       }
-      runId = await startRun(pool, agentID);
+      runId = await startRun(pool, agentID, instanceId);
       metrics.totalTokens++;
     } catch (err) {
       log(`[${pool.name}] setup error: ${err.message}`);
@@ -455,7 +455,7 @@ async function handleAnthropicMessages(req, res) {
           error: { message: 'freebuff waiting room queued', type: 'server_error' },
         });
       }
-      runId = await startRun(pool, agentID);
+      runId = await startRun(pool, agentID, instanceId);
       metrics.totalTokens++;
     } catch (err) {
       log(`[${pool.name}] setup error: ${err.message}`);
@@ -1081,7 +1081,7 @@ function sessionRequest(method, authToken, instanceId, model) {
   });
 }
 
-function startRun(pool, agentId) {
+function startRun(pool, agentId, instanceId) {
   return new Promise((resolve, reject) => {
     const url = new URL('/api/v1/agent-runs', config.UPSTREAM_BASE_URL);
     const transport = url.protocol === 'https:' ? https : http;
@@ -1096,6 +1096,12 @@ function startRun(pool, agentId) {
           'Content-Type': 'application/json',
           Accept: 'application/json',
           'User-Agent': 'freebuff-proxy/1.0',
+          // HAFIZH-PATCH: bind the run to the ACTIVE session. Without this,
+          // Freebuff treats each run as a NEW session, burning quota per run
+          // and tripping "free-models-per-day-high-balance" (429) even when
+          // the session API still reports quota remaining. With the instance
+          // id, repeated runs reuse the same (free, already-admitted) session.
+          ...(instanceId ? { 'x-freebuff-instance-id': instanceId } : {}),
         },
         ...(httpProxyAgent ? { agent: httpProxyAgent } : {}),
       },
