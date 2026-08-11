@@ -292,3 +292,32 @@ test('doctor: loadConfig tolerates missing config.json (CI-safe)', () => {
     assert.ok(error && error.includes('config.json'));
   }
 });
+
+// ── hasQuotaRemaining (adaptive cooldown) ────────────────────────────────────
+test('hasQuotaRemaining: true when any model has quota left', async () => {
+  const pool = s.createTokenPool('test-token', 'token-1');
+  const mock = async () => ({
+    rateLimitsByModel: {
+      'deepseek/deepseek-v4-flash': { recentCount: 3, limit: 6 },
+      'mimo/mimo-v2.5': { recentCount: 6, limit: 6 },
+    },
+  });
+  assert.strictEqual(await s.hasQuotaRemaining(pool, mock), true);
+});
+
+test('hasQuotaRemaining: false when all models exhausted', async () => {
+  const pool = s.createTokenPool('test-token', 'token-1');
+  const mock = async () => ({
+    rateLimitsByModel: {
+      'deepseek/deepseek-v4-flash': { recentCount: 6, limit: 6 },
+      'mimo/mimo-v2.5': { recentCount: 6, limit: 6 },
+    },
+  });
+  assert.strictEqual(await s.hasQuotaRemaining(pool, mock), false);
+});
+
+test('hasQuotaRemaining: false on upstream error (conservative)', async () => {
+  const pool = s.createTokenPool('test-token', 'token-1');
+  const mock = async () => { throw new Error('upstream down'); };
+  assert.strictEqual(await s.hasQuotaRemaining(pool, mock), false);
+});

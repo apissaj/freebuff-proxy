@@ -205,11 +205,24 @@ Set `MAX_REQUESTS_PER_MIN` to a positive integer to cap chat requests per IP
 { "MAX_REQUESTS_PER_MIN": 30 }   // max 30 chat requests/min/IP
 ```
 
-### Token rotation
+### Token rotation & adaptive cooldown
 
 With multiple `AUTH_TOKENS`, requests round-robin across tokens. Every
 `ROTATION_INTERVAL`, all pool cooldowns reset so a throttled token gets a
 fresh chance — ideal for long-running sessions.
+
+When a pool hits a quota/limit error (429), the proxy cools it down so
+`selectPool()` fails over to the next token. The cooldown is **adaptive**:
+
+- **Quota still remaining** (`recentCount < limit` on the session API) → the
+  429 is a short-window rate limit → brief cooldown (`POOL_COOLDOWN_SHORT`,
+  default `2m`) so the pool recovers quickly.
+- **Quota exhausted** (`recentCount == limit`) → long cooldown
+  (`POOL_COOLDOWN`, default `10m`), relying on token rotation to recover.
+
+```json
+{ "POOL_COOLDOWN": "10m", "POOL_COOLDOWN_SHORT": "2m" }
+```
 
 ## 🚀 Usage
 

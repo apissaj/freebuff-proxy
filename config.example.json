@@ -3,6 +3,8 @@
   "UPSTREAM_BASE_URL": "https://www.codebuff.com",
   "AUTH_TOKENS": [],
   "ROTATION_INTERVAL": "6h",
+  "POOL_COOLDOWN": "10m",
+  "POOL_COOLDOWN_SHORT": "2m",
   "REQUEST_TIMEOUT": "15m",
   "API_KEYS": [],
   "HTTP_PROXY": "",

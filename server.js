@@ -891,7 +891,7 @@ function sendUpstream(pool, apiPath, body, stream, requestedModel, runId) {
           // Upstream error — inspect body to decide retry vs surface.
           const chunks = [];
           upstreamResp.on('data', (c) => chunks.push(c));
-          upstreamResp.on('end', () => {
+          upstreamResp.on('end', async () => {
             const errBody = Buffer.concat(chunks).toString();
             const lower = errBody.toLowerCase();
             if (
@@ -923,13 +923,28 @@ function sendUpstream(pool, apiPath, body, stream, requestedModel, runId) {
             }
             // HAFIZH-PATCH: pool cooldown on quota/limit errors so selectPool()
             // fails over to the next token instead of hammering the same one.
-            // 429 = quota exhausted (6/day), 503 = overloaded/capacity deferred,
-            // 409 session_model_mismatch etc. Cool down this pool and retry.
+            // 429 = quota exhausted (6/day) OR transient short-window rate limit;
+            // 503 = overloaded/capacity deferred; 409 session_model_mismatch etc.
+            // Cool down this pool and retry. Cooldown is ADAPTIVE:
+            //   - if the upstream session API still reports quota remaining
+            //     (recentCount < limit), the 429 is a SHORT-WINDOW rate limit —
+            //     cool down briefly (POOL_COOLDOWN_SHORT, default 2m) so the
+            //     pool recovers quickly instead of sitting dead for 10 minutes.
+            //   - otherwise the daily quota is genuinely exhausted — cool down
+            //     for the full window (POOL_COOLDOWN, default 10m) and rely on
+            //     token rotation to recover later.
             if (isQuotaError(upstreamResp.statusCode, errBody)) {
-              const cooldownMs = parseDuration(config.POOL_COOLDOWN || '10m');
+              const quotaRemaining = await hasQuotaRemaining(pool);
+              const cooldownMs = parseDuration(
+                quotaRemaining ? config.POOL_COOLDOWN_SHORT || '2m' : config.POOL_COOLDOWN || '10m',
+              );
               pool.cooldownUntil = Date.now() + cooldownMs;
               pool.lastError = errBody.slice(0, 200);
-              log(`[${pool.name}] quota/limit (${upstreamResp.statusCode}) → cooldown ${cooldownMs}ms: ${errBody.slice(0, 120)}`);
+              log(
+                `[${pool.name}] quota/limit (${upstreamResp.statusCode}) → cooldown ${cooldownMs}ms` +
+                  (quotaRemaining ? ' (quota sisa, short window)' : ' (quota habis, long window)') +
+                  `: ${errBody.slice(0, 120)}`,
+              );
               resolve({ shouldRetry: true, reason: `cooldown ${upstreamResp.statusCode}` });
               return;
             }
@@ -965,6 +980,28 @@ function sendUpstream(pool, apiPath, body, stream, requestedModel, runId) {
 
 function createTokenPool(token, name) {
   return { name, token, session: null, activeRun: null, lastError: '', cooldownUntil: 0 };
+}
+
+/**
+ * HAFIZH-PATCH: check whether the upstream still has quota remaining for this
+ * pool's token. Used to decide cooldown length after a 429: short cooldown if
+ * quota remains (transient rate limit), long cooldown if the daily quota is
+ * exhausted. Cheap read-only GET to the session API; never throws.
+ */
+async function hasQuotaRemaining(pool, sessionRequestFn = sessionRequest) {
+  try {
+    const resp = await sessionRequestFn('GET', pool.token, null, null);
+    const rl = (resp && resp.rateLimitsByModel) || {};
+    for (const info of Object.values(rl)) {
+      const used = info.recentCount || 0;
+      const limit = info.limit || 0;
+      if (limit > 0 && used < limit) return true; // still has room on some model
+    }
+    return false;
+  } catch {
+    // Can't reach upstream — assume quota exhausted (conservative, long cooldown).
+    return false;
+  }
 }
 
 function selectPool() {
@@ -1464,6 +1501,7 @@ module.exports = {
   parseFreeAgents,
   loadConfig,
   isQuotaError,
+  hasQuotaRemaining,
   // Runtime pieces (integration tests)
   createTokenPool,
   selectPool,
