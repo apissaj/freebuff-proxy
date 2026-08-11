@@ -279,9 +279,16 @@ test('doctor: statusColor applies color by ok', () => {
   assert.ok(d.statusColor('x', false).includes('\x1b[31m'));
 });
 
-test('doctor: loadConfig parses config.json with defaults', () => {
+test('doctor: loadConfig tolerates missing config.json (CI-safe)', () => {
+  // config.json is gitignored (contains real tokens) — CI runs without it.
+  // loadConfig must return an error object (not throw) and skip gracefully.
   const { error, config } = d.loadConfig();
-  assert.strictEqual(error, null);
-  assert.ok(Array.isArray(config.AUTH_TOKENS));
-  assert.ok(config.UPSTREAM_BASE_URL);
+  if (fs.existsSync(path.join(__dirname, '..', 'config.json'))) {
+    assert.strictEqual(error, null);
+    assert.ok(Array.isArray(config.AUTH_TOKENS));
+    assert.ok(config.UPSTREAM_BASE_URL);
+  } else {
+    // CI / fresh checkout: no config.json — must report error, not crash
+    assert.ok(error && error.includes('config.json'));
+  }
 });
