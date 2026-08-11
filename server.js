@@ -1019,7 +1019,23 @@ async function ensureSession(pool, requestedModel) {
   const now = Date.now();
   if (pool.session && pool.session.status === 'active' && pool.session.instanceId) {
     if (!pool.session.expiresAt || pool.session.expiresAt > now + 5000) {
-      return pool.session.instanceId;
+      // HAFIZH-PATCH: cached session looks fresh by wall clock, but the server
+      // may have ENDED it (superseded / expired early / daily reset). Verify
+      // once per request via GET before trusting it — cheap and read-only.
+      // Without this, we keep POSTing runs to a dead session → persistent 429
+      // "free-models-per-day-high-balance" even though quota remains.
+      try {
+        const check = await sessionRequest('GET', pool.token, pool.session.instanceId);
+        if (check.status === 'active') {
+          return pool.session.instanceId;
+        }
+        // Not active anymore — fall through and create a fresh session.
+        log(`[${pool.name}] cached session ${pool.session.instanceId.slice(0, 8)}… no longer active (${check.status}) → fresh session`);
+        pool.session = null;
+      } catch {
+        // GET failed (network). Keep the cached session — better than nothing.
+        return pool.session.instanceId;
+      }
     }
   }
 
