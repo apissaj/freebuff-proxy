@@ -247,3 +247,41 @@ test('isQuotaError: 409 with real quota wording still detected', () => {
   assert.strictEqual(s.isQuotaError(409, '{"error":"free_mode_capacity_deferred"}'), true);
   assert.strictEqual(s.isQuotaError(409, '{"error":"rate limit exceeded"}'), true);
 });
+
+// ── doctor.js helpers ────────────────────────────────────────────────────────
+const d = require('../doctor.js');
+
+test('doctor: maskToken masks middle of token', () => {
+  assert.strictEqual(d.maskToken('1234567890123456'), '12345678…3456');
+  assert.strictEqual(d.maskToken('short'), 'short');
+  assert.strictEqual(d.maskToken(''), '(empty)');
+});
+
+test('doctor: badge renders OK/FAIL with ANSI color', () => {
+  const okBadge = d.badge(true);
+  assert.ok(okBadge.includes('✓'));
+  assert.ok(okBadge.includes('\x1b[32m'));
+  const failBadge = d.badge(false, 'problem');
+  assert.ok(failBadge.includes('✗'));
+  assert.ok(failBadge.includes('problem'));
+  assert.ok(failBadge.includes('\x1b[31m'));
+});
+
+test('doctor: fmtTime humanizes durations', () => {
+  assert.strictEqual(d.fmtTime(0), '—');
+  assert.strictEqual(d.fmtTime(45 * 1000), '45s');
+  assert.strictEqual(d.fmtTime(5 * 60 * 1000), '5m 0s');
+  assert.strictEqual(d.fmtTime(3 * 3600 * 1000), '3j 0m');
+});
+
+test('doctor: statusColor applies color by ok', () => {
+  assert.ok(d.statusColor('x', true).includes('\x1b[32m'));
+  assert.ok(d.statusColor('x', false).includes('\x1b[31m'));
+});
+
+test('doctor: loadConfig parses config.json with defaults', () => {
+  const { error, config } = d.loadConfig();
+  assert.strictEqual(error, null);
+  assert.ok(Array.isArray(config.AUTH_TOKENS));
+  assert.ok(config.UPSTREAM_BASE_URL);
+});

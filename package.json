@@ -17,6 +17,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js --verbose",
+    "doctor": "node doctor.js",
+    "doctor:quick": "node doctor.js --quick",
     "test": "node --test test/*.test.js"
   },
   "keywords": [

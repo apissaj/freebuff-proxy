@@ -219,6 +219,38 @@ node server.js --verbose  # verbose logging
 node server.js --config my-config.json   # custom config path
 ```
 
+### 🩺 Doctor — one-command health check
+
+Bingung "proxy kenapa 502?" Jalankan doctor — satu perintah cek semua lapisan:
+
+```bash
+npm run doctor          # cek config + semua token (live upstream) + proxy
+npm run doctor:quick    # lokal saja (config + healthz), tanpa panggil upstream
+npm run doctor -- --json   # output machine-readable (buat script/monitoring)
+```
+
+Output:
+
+```
+1. CONFIG  ✓ OK
+   tokens: 2 | upstream: https://www.codebuff.com
+
+2. TOKENS  (live upstream check)
+   token-1 3fc2acf7…9597 → HTTP 200
+      session: ended (a71c7e3b…)
+      expires: 11/8/2026, 19.21.01
+      limit deepseek/deepseek-v4-flash: 6/pacific_day
+      limit mimo/mimo-v2.5: 6/pacific_day
+
+3. PROXY   ✓ OK
+   healthz: models=6 tokens=2 ok=true
+
+✓ SEMUA SEHAT — proxy siap dipakai
+```
+
+`doctor` menjawab langsung: token mana yang sehat, session aktif/ended, sisa quota per model,
+waktu reset, dan apakah proxy lokal hidup — tanpa bongkar `server.log` manual.
+
 ### Health & models
 
 ```bash
